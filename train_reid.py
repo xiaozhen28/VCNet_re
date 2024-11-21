@@ -64,7 +64,7 @@ if __name__ == '__main__':
     scheduler = create_scheduler(cfg, optimizer)
 
 
-    model_view.load_param("/home/zhenjie/VCNet_re/logs/veri_vcnet_view/vcnetstage_view.pth") # 填写自己第一步训练得到的权重
+    model_view.load_param("/home/zhenjie/VCNet_re/logs/veri_vcnet_view/vcnetstage_view.pth") # 填写自己第一步训练得到的权重地址
     do_stage( # train id model 
         cfg,
         model_view,
