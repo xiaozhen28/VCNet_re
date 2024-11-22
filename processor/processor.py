@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 from utils.meter import AverageMeter
 from utils.metrics import R1_mAP_eval
+from utils.metrics_view import R1_mAP_eval as R1_mAP_eval_view
 from torch.cuda import amp
 import torch.distributed as dist
 
@@ -33,9 +34,9 @@ def do_view_stage(cfg,
     eval_period = cfg.SOLVER.EVAL_PERIOD
 
     device = "cuda"
-    epochs = 120
+    epochs = 80
 
-    logger = logging.getLogger("transreid.train_stage1")
+    logger = logging.getLogger("transreid.train_view")
     logger.info('start training')
     model.cuda()
     
@@ -46,7 +47,7 @@ def do_view_stage(cfg,
     loss_meter = AverageMeter()
     acc_meter = AverageMeter()
 
-    evaluator = R1_mAP_eval(num_query, max_rank=50, feat_norm=cfg.TEST.FEAT_NORM,query_methd=cfg.TEST.EVAL_METHD, muti_query_num=cfg.TEST.EVAL_NUM,simularity_threshold=cfg.TEST.SIMULARITY_TH)
+    evaluator = R1_mAP_eval_view(num_query, max_rank=50, feat_norm=cfg.TEST.FEAT_NORM)
     scaler = amp.GradScaler()
 
 
@@ -62,15 +63,12 @@ def do_view_stage(cfg,
             optimizer.zero_grad()
             optimizer_center.zero_grad()
             img = img.to(device)
-            target = vid.to(device)
             target_cam = target_cam.to(device)
             target_view = target_view.to(device)
             with amp.autocast(enabled=True):
                 score, feat = model(img) # 模型得分，最终特征
                 loss = loss_fn(score, feat, target_view)
-
             scaler.scale(loss).backward()
-
             scaler.step(optimizer)
             scaler.update()
 
@@ -95,11 +93,8 @@ def do_view_stage(cfg,
 
         end_time = time.time()
         time_per_batch = (end_time - start_time) / (n_iter + 1)
-        if cfg.MODEL.DIST_TRAIN:
-            pass
-        else:
-            logger.info("Epoch {} done. Time per batch: {:.3f}[s] Speed: {:.1f}[samples/s]"
-                        .format(epoch, time_per_batch, train_loader.batch_size / time_per_batch))
+
+        logger.info("Epoch {} done. Time per batch: {:.3f}[s] Speed: {:.1f}[samples/s]".format(epoch, time_per_batch, train_loader.batch_size / time_per_batch))
 
         if epoch % checkpoint_period == 0:
             if cfg.MODEL.DIST_TRAIN:
@@ -112,49 +107,29 @@ def do_view_stage(cfg,
 
         # 测试阶段
         if epoch % eval_period == 0:
-            if cfg.MODEL.DIST_TRAIN:
-                if dist.get_rank() == 0:
-                    model.eval()
-                    for n_iter, (img, vid, camid, camids, target_view, _) in enumerate(query_loader):
-                        with torch.no_grad():
-                            img = img.to(device)
-                            camids = camids.to(device)
-                            target_view = target_view.to(device)
-                            feat, gvid = model(img, cam_label=camids, view_label=target_view,isquery=True)
-                            evaluator.update((feat, gvid, camid))
-
-                    cmc, mAP, mCSP, mINP,_, _, _, _, _ = evaluator.compute()
-                    logger.info("Validation Results By {} muti_num={}".format(cfg.TEST.EVAL_METHD,cfg.TEST.EVAL_NUM))
-                    logger.info("mAP: {:.1%}".format(mAP))
-                    logger.info("mCSP: {:.1%}".format(mCSP))
-                    logger.info("mINP: {:.1%}".format(mINP))
-                    for r in [1, 5, 10]:
-                        logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))
-                    torch.cuda.empty_cache()
-            else:
-                model.eval()
-                for n_iter, (img, vid, camid, camids, target_view, _) in enumerate(query_loader):
-                    with torch.no_grad():
-                        img = img.to(device)
-                        camids = camids.to(device)
-                        target_view = target_view
-                        feat = model(img, vid, cam_label=camids, view_label=target_view)
-                        evaluator.update((feat,target_view, camid))
-                for n_iter, (img, vid, camid, camids, target_view, _) in enumerate(gallery_loader):
-                    with torch.no_grad():
-                        img = img.to(device)
-                        camids = camids.to(device)
-                        target_view = target_view
-                        feat = model(img,vid,cam_label=camids, view_label=target_view)
-                        evaluator.update((feat, target_view, camid))
-                cmc, mAP,mCSP,mINP, _, _, _, _, _ = evaluator.compute()
-                logger.info("Validation Results By {} muti_num={}".format(cfg.TEST.EVAL_METHD,cfg.TEST.EVAL_NUM))
-                logger.info("mAP: {:.1%}".format(mAP))
-                logger.info("mCSP: {:.1%}".format(mCSP))
-                logger.info("mINP: {:.1%}".format(mINP))
-                for r in [1, 5, 10]:
-                    logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))
-                torch.cuda.empty_cache()
+            model.eval()
+            for n_iter, (img, vid, camid, camids, target_view, _) in enumerate(query_loader):
+                with torch.no_grad():
+                    img = img.to(device)
+                    camids = camids.to(device)
+                    target_view = target_view
+                    feat = model(img)
+                    evaluator.update((feat,target_view, camid))
+            for n_iter, (img, vid, camid, camids, target_view, _) in enumerate(gallery_loader):
+                with torch.no_grad():
+                    img = img.to(device)
+                    camids = camids.to(device)
+                    target_view = target_view
+                    feat = model(img)
+                    evaluator.update((feat, target_view, camid))
+            cmc, mAP,mCSP,mINP, _, _, _, _, _ = evaluator.compute()
+            logger.info("Validation Results By {} muti_num={}".format(cfg.TEST.EVAL_METHD,cfg.TEST.EVAL_NUM))
+            logger.info("mAP: {:.1%}".format(mAP))
+            logger.info("mCSP: {:.1%}".format(mCSP))
+            logger.info("mINP: {:.1%}".format(mINP))
+            for r in [1, 5, 10]:
+                logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))
+            torch.cuda.empty_cache()
 
 
 def do_stage(cfg,
@@ -210,13 +185,8 @@ def do_stage(cfg,
             target_cam = target_cam.to(device)
             target_view = target_view.to(device)
             with amp.autocast(enabled=True):
-                output_view=model_view(img) 
+                output_view = model_view(img) 
                 score,feat = model(img,output_view) # 模型得分，最终特征
-                # loss = 0
-                # for i in range(0, len(output), 4):
-                #         loss_tmp = loss_fn(score=output[i], feat=output[i + 1], target=output[i+2], target_cam=output[i+3])
-                # loss = loss + loss_tmp
-
                 loss = loss_fn(score, feat, target, target_cam)
 
             scaler.scale(loss).backward()
